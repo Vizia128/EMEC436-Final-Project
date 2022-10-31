@@ -7,8 +7,19 @@ struct Airfoil
     lowerpoints::Matrix
     upperspline
     lowerspline
+    leftmost
+    rightmost
 end
 
+
+"""
+    Airfoil(address::String)
+
+Finds the upper and lower splines of an airfoil from a dat file. 
+
+Assumptions: The points range from x=1 to x=0 for the upper section and 
+then range from x=0 to x=1 on the lower section.
+"""
 function Airfoil(address::String)
     file = open(address)
     lines = readlines(file)
@@ -18,6 +29,7 @@ function Airfoil(address::String)
     numpnts = size(splitlines)[1]
 
     points = zeros(size(splitlines, 1), 2)
+
     upperpoints = 0
     for i in 1:numpnts
         sp = splitlines[i]
@@ -36,9 +48,27 @@ function Airfoil(address::String)
     lowerspline = Interpolations.scale(interpolate(lowerpoints, 
         (BSpline(Cubic(Natural(OnGrid()))), NoInterp())), 1:size(lowerpoints, 1), 1:2)
 
-    return Airfoil(name, points, upperpoints, lowerpoints, upperspline, lowerspline)
+    leftmost = 0.0
+    rightmost = 1.0
+
+    return Airfoil(name, points, upperpoints, lowerpoints, upperspline, lowerspline, 
+        leftmost, rightmost)
 end
 
+function Airfoil(name::String, upperpoints::Matrix, lowerpoints::Matrix)
+    leftmost = lowerpoints[1,1]
+    rightmost = upperpoints[1,1]
+
+    upperspline = Interpolations.scale(interpolate(upperpoints, 
+        (BSpline(Cubic(Natural(OnGrid()))), NoInterp())), 1:size(upperpoints, 1), 1:2)
+    lowerspline = Interpolations.scale(interpolate(lowerpoints, 
+        (BSpline(Cubic(Natural(OnGrid()))), NoInterp())), 1:size(lowerpoints, 1), 1:2)
+
+    return Airfoil(name, [upperpoints; lowerpoints], upperpoints, lowerpoints, 
+        upperspline, lowerspline, leftmost, rightmost)
+end
+
+"Rotates a 2D point about a pivot point."
 function rotate(pivot::Vector, point::Vector, θ::Real)
     s, c = sin(θ), cos(θ)
     point -= pivot
@@ -47,10 +77,9 @@ function rotate(pivot::Vector, point::Vector, θ::Real)
     return point
 end
 
-
-function findclosest2points(points::Matrix, pos::Vector)
-    pnt1index = 0
-    pnt2index = 0
+function findclosest2points(points, pos)
+    pnt1index::Int = 0
+    pnt2index::Int = 0
     pnt1dist = 1.0e8
     pnt2dist = 1.0e8
     for (i, point) in enumerate(eachrow(points))
@@ -66,7 +95,41 @@ function findclosest2points(points::Matrix, pos::Vector)
     return [pnt1index pnt2index; pnt1dist pnt2dist]
 end
 
-function findclosestpoint(spline, c2pnts::Matrix, pos::Vector, maxdist::Float64, maxiter::Int)
+function setflap_angle(foil::Airfoil, pivot::Vector, angle::Real)
+    upperbreak = findclosest2points(foil.upperpoints[:,1], [pivot[1]])
+    lowerbreak = findclosest2points(foil.lowerpoints[:,1], [pivot[1]])
+
+    if upperbreak[1,1] > upperbreak[1,2]
+        upperbreak[:,1], upperbreak[:,2] = upperbreak[:,2], upperbreak[:,1]
+    end
+    if lowerbreak[1,1] < lowerbreak[1,2]
+        lowerbreak[:,1], lowerbreak[:,2] = lowerbreak[:,2], lowerbreak[:,1]
+    end
+
+    ubb = Int(upperbreak[1,1])
+    ufb = Int(upperbreak[1,2])
+    lbb = Int(lowerbreak[1,2])
+    lfb = Int(lowerbreak[1,1])
+
+    upperbody = foil.upperpoints[1:ubb, :]
+    upperflap = foil.upperpoints[ufb:end, :]
+    lowerbody = foil.lowerpoints[1:lbb, :]
+    lowerflap = foil.lowerpoints[lfb:end, :]
+
+    pivot[2] = foil.upperpoints[ufb, 2] - foil.lowerpoints[lfb, 2]
+
+    for (i, uf) in enumerate(eachrow(upperbody))
+        upperbody[i,:] = rotate(pivot, upperbody[i,:], angle)
+    end
+    for (i, lf) in enumerate(eachrow(lowerflap))
+        lowerflap[i,:] = rotate(pivot, lowerflap[i,:], angle)
+    end
+    return Airfoil(foil.name, [upperbody; upperflap], [lowerbody; lowerflap])
+end
+
+function findclosestpoint(spline, c2pnts::Matrix, pos::Vector, 
+    maxdist::Float64, maxiter::Int)
+
     for iter in 1:maxiter
         midindex = (c2pnts[1,1] + c2pnts[1,2])/2
         midpoint = [spline(midindex, 1), spline(midindex, 2)]
@@ -87,6 +150,11 @@ function findclosestpoint(spline, c2pnts::Matrix, pos::Vector, maxdist::Float64,
     return [spline(c2pnts[1,1], 1), spline(c2pnts[1,1], 2)], c2pnts[2,1]
 end
 
+
+"""
+Finds the vertical distance between a point and a B-spline. 
+This function assumes the point is within the horizontal domain of the spline.
+"""
 function findvertdist(spline, pos::Vector, maxdist, maxiter)
     t1 = 1
     t2 = size(spline, 1)
@@ -132,7 +200,7 @@ function sdf(foil::Airfoil, pos::Vector; maxdist::Float64 = 0.001, maxiter::Int 
 
     if upper
         cpnt, cdist = findclosestpoint(foil.upperspline, u2pnts, pos, maxdist, maxiter)
-        if 0 <= pos[1] <= 1
+        if foil.leftmost <= pos[1] <= foil.rightmost
             vdist = findvertdist(foil.upperspline, pos, maxdist, maxiter)
             if vdist >= 0
                 return cdist
@@ -144,7 +212,7 @@ function sdf(foil::Airfoil, pos::Vector; maxdist::Float64 = 0.001, maxiter::Int 
         end
     else
         cpnt, cdist = findclosestpoint(foil.lowerspline, l2pnts, pos, maxdist, maxiter)
-        if 0 <= pos[1] <= 1
+        if foil.leftmost <= pos[1] <= foil.rightmost
             vdist = findvertdist(foil.lowerspline, pos, maxdist, maxiter)
             if vdist <= 0
                 return cdist
@@ -157,9 +225,10 @@ function sdf(foil::Airfoil, pos::Vector; maxdist::Float64 = 0.001, maxiter::Int 
     end
 end
 
-function sdf_array(foil::Airfoil; n = 16, m = 16, maxdist::Float64 = 1/(n+m), maxiter::Int = 10000)
-    A = zeros(n,m)
+function sdf_array(foil::Airfoil; n = 16, m = 16, 
+    maxdist::Float64 = 1/(n+m), maxiter::Int = 10000)
 
+    A = zeros(n,m)
     for i in 1:n, j in 1:m
         A[i,j] = sdf(foil, [2i/n-0.5, 2j/m-1]; maxdist, maxiter)
     end
@@ -168,7 +237,14 @@ end
 
 function testrun(;n=256, m=256)
     foil = Airfoil("Airfoils/naca/naca6621.dat")
+    foil = setflap_angle(foil, [0.8, 0], -π/12)
+
+    # plot(foil.upperspline[:, 1], 
+    #     foil.upperspline[:,2])
+    # plot!(foil.lowerspline[:, 1], 
+    #     foil.lowerspline[:,2])
     S = sdf_array(foil; n, m)
-    contour(S'; size=(1000,800), fill=(true), layers=6)
+
+    contour(S'; size=(1000,800), fill=(true))
     plot!((foil.points[:,1].+0.5)*n/2, (foil.points[:,2].+1)*m/2; color=:white, linewidth=2)
 end
