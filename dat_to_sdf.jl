@@ -116,7 +116,7 @@ function setflap_angle(foil::Airfoil, pivot::Vector, angle::Real)
     lowerbody = foil.lowerpoints[1:lbb, :]
     lowerflap = foil.lowerpoints[lfb:end, :]
 
-    pivot[2] = foil.upperpoints[ufb, 2] - foil.lowerpoints[lfb, 2]
+    pivot[2] = (foil.upperpoints[ufb, 2] + foil.lowerpoints[lfb, 2])/2
 
     for (i, uf) in enumerate(eachrow(upperbody))
         upperbody[i,:] = rotate(pivot, upperbody[i,:], angle)
@@ -237,7 +237,7 @@ end
 
 function testrun(;n=256, m=256)
     foil = Airfoil("Airfoils/naca/naca6621.dat")
-    foil = setflap_angle(foil, [0.8, 0], -π/12)
+    foil = setflap_angle(foil, [0.8, 0], π/2)
 
     # plot(foil.upperspline[:, 1], 
     #     foil.upperspline[:,2])
