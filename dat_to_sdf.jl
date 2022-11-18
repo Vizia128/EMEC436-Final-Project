@@ -1,4 +1,4 @@
-using LinearAlgebra, Plots, Interpolations
+using LinearAlgebra, Plots, Interpolations, CSV
 
 struct Airfoil
     name::String
@@ -77,7 +77,7 @@ function rotate(pivot::Vector, point::Vector, θ::Real)
     return point
 end
 
-function findclosest2points(points, pos)
+function findclosest2points(points, pos::Vector)
     pnt1index::Int = 0
     pnt2index::Int = 0
     pnt1dist = 1.0e8
@@ -93,6 +93,52 @@ function findclosest2points(points, pos)
         end
     end
     return [pnt1index pnt2index; pnt1dist pnt2dist]
+end
+
+function findclosest2points(pointsA::Matrix, pointsB::Matrix)
+    # pntindex = [A1 B1; A2 B2]
+    pntindexA = [0 0]
+    pntindexB = [0 0]
+    pntdist = 1e8*[1,1]
+
+    for (a, pntA) in enumerate(eachrow(pointsA)), (b, pntB) in enumerate(eachrow(pointsB))
+        tempdist = norm(pntA - pntB, 2)
+        if tempdist < pntdist[1]
+            pntdist[1], pntdist[2] = tempdist, pntdist[1]
+            pntindexA[1], pntindexA[2] = a, pntindexA[1]
+            pntindexB[1], pntindexB[2] = b, pntindexB[1]
+        elseif tempdist < pntdist[2]
+            pntdist[2] = tempdist
+            pntindexA[2] = a
+            pntindexB[2] = b
+        end
+    end
+
+    if pointsA[pntindexA[1]] > pointsA[pntindexA[2]]
+        pntindexA[1], pntindexA[2] = pntindexA[2], pntindexA[1]
+    end
+    if pointsB[pntindexB[1]] > pointsB[pntindexB[2]]
+        pntindexB[1], pntindexB[2] = pntindexB[2], pntindexB[1]
+    end
+    return pntindexA, pntindexB
+end
+
+function remove_overlap(body, flap)
+    ibody, iflap = findclosest2points(body, flap)
+    xbody = [body[ibody[1]], body[ibody[2]]]
+    xflap = [flap[iflap[1]], flap[iflap[2]]]
+    
+    # Check if there is no overlap
+    if xbody[2] < xflap[1]
+        return body, flap
+    end
+
+    # Check direction of spline
+    if ibody[1] < ibody[2]
+        return body[1:ibody[1], :], flap[iflap[2]:end, :]
+    end
+
+    return body[ibody[2]:end, :], flap[1:iflap[1], :]
 end
 
 function setflap_angle(foil::Airfoil, pivot::Vector, angle::Real)
@@ -124,7 +170,30 @@ function setflap_angle(foil::Airfoil, pivot::Vector, angle::Real)
     for (i, lf) in enumerate(eachrow(lowerflap))
         lowerflap[i,:] = rotate(pivot, lowerflap[i,:], angle)
     end
+
+    upperbody, upperflap = remove_overlap(upperbody, upperflap)
+    lowerbody, lowerflap = remove_overlap(lowerbody, lowerflap)
     return Airfoil(foil.name, [upperbody; upperflap], [lowerbody; lowerflap])
+end
+
+function setflap_angle(foil::Airfoil, pivot::Real, angle)
+    (;name, upperpoints, lowerpoints) = foil
+
+    for (i, pnt) in enumerate(eachrow(upperpoints))
+        if pnt[1] < pivot
+            continue
+        end
+        upperpoints[i,2] += (upperpoints[i,1] - pivot)*sin(angle)
+        upperpoints[i,1] -= (upperpoints[i,1] - pivot)*abs(sin(angle))
+    end
+    for (i, pnt) in enumerate(eachrow(lowerpoints))
+        if pnt[1] < pivot
+            continue
+        end
+        lowerpoints[i,2] += (lowerpoints[i,1] - pivot)*sin(angle)
+        lowerpoints[i,1] -= (lowerpoints[i,1] - pivot)*abs(sin(angle))
+    end
+    return Airfoil(name, upperpoints, lowerpoints)
 end
 
 function findclosestpoint(spline, c2pnts::Matrix, pos::Vector, 
@@ -145,7 +214,7 @@ function findclosestpoint(spline, c2pnts::Matrix, pos::Vector,
             pp = [spline(c2pnts[1,1], 1), spline(c2pnts[1,1], 2)]
             dd = c2pnts[2,1]
             return pp, dd
-        end
+        end 
     end
     return [spline(c2pnts[1,1], 1), spline(c2pnts[1,1], 2)], c2pnts[2,1]
 end
@@ -236,15 +305,20 @@ function sdf_array(foil::Airfoil; n = 16, m = 16,
 end
 
 function testrun(;n=256, m=256)
-    foil = Airfoil("Airfoils/naca/naca6621.dat")
-    foil = setflap_angle(foil, [0.8, 0], π/2)
+    foil = Airfoil("Airfoils/naca/naca6622.dat")
+    # foil = setflap_angle(foil, [0.8, 0], π/2)
+    # foil = setflap_angle(foil, 0.7, π/2*(0.2))
 
     # plot(foil.upperspline[:, 1], 
     #     foil.upperspline[:,2])
     # plot!(foil.lowerspline[:, 1], 
     #     foil.lowerspline[:,2])
     S = sdf_array(foil; n, m)
+    xs = LinRange(-0.5, 1.5, n)
+    ys = LinRange(-1, 1, m)
 
-    contour(S'; size=(1000,800), fill=(true))
-    plot!((foil.points[:,1].+0.5)*n/2, (foil.points[:,2].+1)*m/2; color=:white, linewidth=2)
+    contour(xs, ys, S'; size=(1000,800), fill=(true, ))
+    plot!((foil.points[:,1]), (foil.points[:,2]); color=:white, linewidth=2, label="NACA 6622")
+    # savefig("Paper/figures/sdf_naca6622.svg")
 end
+testrun()

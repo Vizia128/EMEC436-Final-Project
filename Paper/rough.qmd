@@ -1,0 +1,38 @@
+---
+title: Data-Driven Modeling of Steady Navier-Stokes using Deep Convolutional and Graph Neural Networks
+author:
+  - name: Julian Kizanis
+    email: julianzia@gmail.com  
+geometry: margin=0.5in
+papersize: letter
+
+number-sections: true
+number-depth: 3
+
+abstract: |
+  Neural Networks (NNs) have been able to solve PDEs using much less computational power than traditional methods such as FVM. Particularly, Convolutional Neural Networks (CNNs), Graph Neural Networks (GNNs) and Fourier Neural Operators (FNOs) have shown great promise. 
+
+---
+
+# Introduction
+
+# Methodology
+
+## CFD simulation
+
+## Convolutional Neural Networks
+
+### U-net Architecture
+
+## Graph Neural Networks
+
+## Signed Distance Functions
+
+# Results and Discussion
+
+# Conclusions
+
+# References
+
+::: {#refs}
+:::
