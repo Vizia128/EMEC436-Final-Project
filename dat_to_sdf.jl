@@ -1,4 +1,13 @@
-using LinearAlgebra, Plots, Interpolations, CSV
+using LinearAlgebra, Plots, Interpolations, CSV, DataFrames, JLD2
+
+"Rotates a 2D point about a pivot point."
+function rotate(pivot::Vector, point::Vector, θ::Real)
+    s, c = sin(θ), cos(θ)
+    point -= pivot
+    point = [c -s; s c] * point
+    point += pivot
+    return point
+end
 
 struct Airfoil
     name::String
@@ -11,6 +20,12 @@ struct Airfoil
     rightmost
 end
 
+function save_as_csv(name, xy)
+    z = zeros(size(xy, 1))
+    xyz = [xy z]
+    
+    CSV.write("Airfoils/CSV_naca/$name.csv", DataFrame(xyz, :auto); writeheader=false)
+end
 
 """
     Airfoil(address::String)
@@ -23,7 +38,7 @@ then range from x=0 to x=1 on the lower section.
 function Airfoil(address::String)
     file = open(address)
     lines = readlines(file)
-    name = popfirst!(lines)
+    name = first(popfirst!(lines), 8)
     slines = strip.(lines, [' '])
     splitlines = split.(slines, " "; limit = 2)
     numpnts = size(splitlines)[1]
@@ -43,13 +58,15 @@ function Airfoil(address::String)
     end
     lowerpoints = points[size(upperpoints, 1):end, :]
 
-    upperspline = Interpolations.scale(interpolate(upperpoints, 
+    upperspline = Interpolations.scale(Interpolations.interpolate(upperpoints, 
         (BSpline(Cubic(Natural(OnGrid()))), NoInterp())), 1:size(upperpoints, 1), 1:2)
-    lowerspline = Interpolations.scale(interpolate(lowerpoints, 
+    lowerspline = Interpolations.scale(Interpolations.interpolate(lowerpoints, 
         (BSpline(Cubic(Natural(OnGrid()))), NoInterp())), 1:size(lowerpoints, 1), 1:2)
 
     leftmost = 0.0
     rightmost = 1.0
+
+    save_as_csv(name, points)
 
     return Airfoil(name, points, upperpoints, lowerpoints, upperspline, lowerspline, 
         leftmost, rightmost)
@@ -59,22 +76,25 @@ function Airfoil(name::String, upperpoints::Matrix, lowerpoints::Matrix)
     leftmost = lowerpoints[1,1]
     rightmost = upperpoints[1,1]
 
-    upperspline = Interpolations.scale(interpolate(upperpoints, 
+    upperspline = Interpolations.scale(Interpolations.interpolate(upperpoints, 
         (BSpline(Cubic(Natural(OnGrid()))), NoInterp())), 1:size(upperpoints, 1), 1:2)
-    lowerspline = Interpolations.scale(interpolate(lowerpoints, 
+    lowerspline = Interpolations.scale(Interpolations.interpolate(lowerpoints, 
         (BSpline(Cubic(Natural(OnGrid()))), NoInterp())), 1:size(lowerpoints, 1), 1:2)
 
     return Airfoil(name, [upperpoints; lowerpoints], upperpoints, lowerpoints, 
         upperspline, lowerspline, leftmost, rightmost)
 end
 
-"Rotates a 2D point about a pivot point."
-function rotate(pivot::Vector, point::Vector, θ::Real)
-    s, c = sin(θ), cos(θ)
-    point -= pivot
-    point = [c -s; s c] * point
-    point += pivot
-    return point
+function Airfoil(address::String, angle::Real)
+    foil = Airfoil(address)
+
+    for i in size(foil.upperpoints, 1)
+        foil.upperpoints[i,:] = rotate([0,0], foil.upperpoints[i,:], angle)
+    end
+    for i in size(foil.lowerpoints, 1)
+        foil.lowerpoints[i,:] = rotate([0,0], foil.lowerpoints[i,:], angle)
+    end
+    return Airfoil(foil.name, foil.lowerpoints, foil.upperpoints)
 end
 
 function findclosest2points(points, pos::Vector)
@@ -224,7 +244,7 @@ end
 Finds the vertical distance between a point and a B-spline. 
 This function assumes the point is within the horizontal domain of the spline.
 """
-function findvertdist(spline, pos::Vector, maxdist, maxiter)
+function findvertdist(spline, pos::Vector; maxdist::Float64 = 0.001, maxiter::Int = 100)
     t1 = 1
     t2 = size(spline, 1)
     tm = t2/2
@@ -270,7 +290,7 @@ function sdf(foil::Airfoil, pos::Vector; maxdist::Float64 = 0.001, maxiter::Int 
     if upper
         cpnt, cdist = findclosestpoint(foil.upperspline, u2pnts, pos, maxdist, maxiter)
         if foil.leftmost <= pos[1] <= foil.rightmost
-            vdist = findvertdist(foil.upperspline, pos, maxdist, maxiter)
+            vdist = findvertdist(foil.upperspline, pos; maxdist, maxiter)
             if vdist >= 0
                 return cdist
             else
@@ -282,7 +302,7 @@ function sdf(foil::Airfoil, pos::Vector; maxdist::Float64 = 0.001, maxiter::Int 
     else
         cpnt, cdist = findclosestpoint(foil.lowerspline, l2pnts, pos, maxdist, maxiter)
         if foil.leftmost <= pos[1] <= foil.rightmost
-            vdist = findvertdist(foil.lowerspline, pos, maxdist, maxiter)
+            vdist = findvertdist(foil.lowerspline, pos; maxdist, maxiter)
             if vdist <= 0
                 return cdist
             else
@@ -304,8 +324,23 @@ function sdf_array(foil::Airfoil; n = 16, m = 16,
     return A
 end
 
+function get_SDF_array(naca, AoA, Re, x_coordinates, y_coordinates;
+    maxdist::Float64 = 1/512, maxiter::Int = 10000)
+
+    dir = "Airfoils/naca/naca$naca.dat"
+    airfoil = Airfoil(dir)
+
+    SDF = zeros(size(x_coordinates, 1), size(y_coordinates, 1))
+
+    for (i, x) in enumerate(x_coordinates), (j, y) in enumerate(y_coordinates)
+        SDF[i,j] = sdf(airfoil, [x,y]; maxdist, maxiter)
+    end
+
+    return SDF
+end
+
 function testrun(;n=256, m=256)
-    foil = Airfoil("Airfoils/naca/naca6622.dat")
+    foil = Airfoil("Airfoils/naca/naca4411.dat")
     # foil = setflap_angle(foil, [0.8, 0], π/2)
     # foil = setflap_angle(foil, 0.7, π/2*(0.2))
 
@@ -317,8 +352,121 @@ function testrun(;n=256, m=256)
     xs = LinRange(-0.5, 1.5, n)
     ys = LinRange(-1, 1, m)
 
-    contour(xs, ys, S'; size=(1000,800), fill=(true, ))
+    contour(xs, ys, S'; size=(1000,800), fill=(true, :jet))
     plot!((foil.points[:,1]), (foil.points[:,2]); color=:white, linewidth=2, label="NACA 6622")
-    # savefig("Paper/figures/sdf_naca6622.svg")
+    # savefig("Paper/figures/sdf_naca6622.png")
 end
-testrun()
+
+
+function get_parameters(dir)
+    vars = split(dir, ",_")
+
+    naca = split(vars[1], "naca")[2]
+    naca = String(naca)
+
+    AoA = split(vars[2], "=")[2]
+    AoA = parse(Float64, AoA)
+
+    Re = split(vars[3], "=")[2]
+    Re = parse(Float64, Re)
+
+    return naca, AoA, Re
+end
+
+function get_PUV_array(dir; inside_obj_num = 0)
+    df = CSV.File(dir) |> DataFrame
+    rename!(df, ["Velocity: Magnitude (m/s)", "Velocity[i] (m/s)", "Velocity[j] (m/s)", 
+        "Pressure (Pa)", "Vorticity: Magnitude (/s)", "X (m)", "Y (m)", "Z (m)"] .=> 
+        ["Vm", "Vx", "Vy", "P", "Vorticity", "x", "y", "z"])
+
+    x_min = minimum(df[!, :x])
+    x_max = maximum(df[!, :x])
+    y_min = minimum(df[!, :y])
+    y_max = maximum(df[!, :y])
+
+    df[!, :x] = Int.((df[!, :x] .- x_min) / (x_max - x_min) * 128)
+    df[!, :y] = Int.((df[!, :y] .- y_min) / (y_max - y_min) * 128)
+
+    P = ones(129,129)*inside_obj_num
+    U = ones(129,129)*inside_obj_num
+    V = ones(129,129)*inside_obj_num
+
+    for row in eachrow(df)
+        i = row[:x] + 1
+        j = row[:y] + 1
+        global P[i,j] = row[:P]
+        global U[i,j] = row[:Vx]
+        global V[i,j] = row[:Vy]
+    end
+
+    return [P;;; U;;; V]
+end
+
+function get_data_arrays(;zero_value=0)
+    did_not_converge = CSV.File("Output/_convergence.csv") |> DataFrame
+    did_not_converge = replace.(did_not_converge, ",_res_03000" => "")
+    did_not_converge = replace.(did_not_converge, "Residuals_" => "")
+    did_not_converge = did_not_converge[!,1]
+
+    output_dirs = readdir("Output/")
+
+    PUV_complete = zeros(129, 129, 3, 0)
+    SDF_complete = zeros(129, 129, 3, 0)
+
+    naca_complete = []
+    AoA_complete::Vector{Float64} = []
+    Re_complete::Vector{Float64} = []
+
+    x_coordinates = ones(129)*zero_value
+    y_coordinates = ones(129)*zero_value
+
+    for i in axes(x_coordinates, 1)
+        x_coordinates[i] = (i - 1)/128*2 - 0.5
+        y_coordinates[i] = (i - 1)/128 - 0.5
+    end
+
+    for dir in output_dirs
+        if occursin("Residuals", dir) || occursin("_all_", dir) || 
+            !iszero(occursin.(did_not_converge, dir)) || occursin("_convergence", dir)
+            continue
+        end
+        naca, AoA, Re = get_parameters(dir)
+
+        PUV = get_PUV_array("Output/$dir")
+        PUV_complete = [PUV_complete ;;;; PUV]
+
+        SDF = get_SDF_array(naca, AoA, Re, x_coordinates, y_coordinates)
+        SDF_bit = SDF .> 0
+        μ = 1.85508e-5 # Pa-s
+        ρ = 1.18415 # kg/m^3
+        
+        U_ini = SDF_bit * Re*μ/ρ * cos(AoA*pi/180)
+        V_ini = SDF_bit * Re*μ/ρ * sin(AoA*pi/180)
+        SDF_UV = [SDF ;;; U_ini ;;; V_ini]
+
+        SDF_complete = [SDF_complete ;;;; SDF_UV]
+
+        append!(naca_complete, naca)
+        append!(AoA_complete, AoA)
+        append!(Re_complete, Re)
+
+        println("Finished naca$naca, AoA = $AoA, Re = $Re")
+    end
+
+    return SDF_complete, PUV_complete, naca_complete, AoA_complete, Re_complete
+end
+
+function save_training_data()
+    SDF_UV, PUV, Naca, AoA, Re = get_data_arrays()
+    __, PUV_Inf, __, __, __ = get_data_arrays(zero_value=Inf)
+
+    SDF_UV = Float32.(SDF_UV[1:end-1, 1:end-1, :, :])
+    PUV = Float32.(PUV[1:end-1, 1:end-1, :, :])
+    AoA = Float32.(AoA)
+    Re = Float32.(Re)
+    samples = size(Re,1)
+
+    jldsave("training_data/sdf_puv_params_128x128x$samples, normed.jld2"; SDF_UV, PUV, PUV_Inf, Naca, AoA, Re)
+end
+
+# save_training_data()
