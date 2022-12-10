@@ -20,13 +20,17 @@ Can convert data into a format fit for training with convert_to_trainable() and 
 Contains the code to train the neural network
 
 Working models can be saved with:
+
 @save "training_data/working_model_V6.jld2" model test_losses train_losses
 
 And loaded with:
+
 @load "training_data/working_model_V5.jld2" model test_losses
 
 And run on correctly formatted data, (x), with:
+
 y = model(x)
 
 view_progress(test_x, test_y, best_model; n=3) plots a nice grid of data, n determines which airfoil is run
+
 view_final(x,y,u;n=1) saves plots to drive
