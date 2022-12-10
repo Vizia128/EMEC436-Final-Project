@@ -34,3 +34,9 @@ y = model(x)
 view_progress(test_x, test_y, best_model; n=3) plots a nice grid of data, n determines which airfoil is run
 
 view_final(x,y,u;n=1) saves plots to drive
+
+## run_star_ccm_sim.jl
+
+run_simulation(;n=1)
+
+Will run n simulations. You will have to add your own key.
